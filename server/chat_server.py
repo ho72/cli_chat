@@ -1,13 +1,10 @@
 # chat_server.py
 import socket
 import threading
+from database import Database
 
-# 접속을 허용할 ID와 비밀번호 지정
-VALID_USERS = {
-    "roro": "1234",
-    "friend": "1234"
-}
-
+# DB 인스턴스 생성
+db = Database()
 clients = {} # {socket 객체: "유저ID"} 형태로 관리
 
 def broadcast(msg, exclude_sock=None):
@@ -19,8 +16,20 @@ def broadcast(msg, exclude_sock=None):
             except:
                 pass
 
+def send_chat_history(client_socket, room_id):
+    """DB에서 이전 채팅 기록을 불러와 클라이언트에게 전송"""
+    history = db.get_recent_message(room_id, limit=20)
+    if history:
+        client_socket.send("\n--- 지난 대화 내역 ---\n".encode('utf-8'))
+        for sender, content, time in history:
+            client_socket.send(f"[{time}] {sender}: {content}\n".encode('utf-8'))
+        client_socket.send("-------------------------------\n\n".encode('utf-8'))
+
 def handle_client(client_socket, addr):
     print(f"[연결 시도] {addr} 에서 접속을 시도합니다.")
+
+    # 임시로 모든 유저를 1번 방에 배정
+    current_room_id = 1
 
     try:
         # 로그인 인증 단계
@@ -32,8 +41,9 @@ def handle_client(client_socket, addr):
         client_socket.send("PW: ".encode('utf-8'))
         password = client_socket.recv(1024).decode('utf-8').strip()
 
-        # 등록된 유저인지 확인
-        if VALID_USERS.get(username) == password:
+        # DB를 통해 인증 확인
+        if db.authenticate_user(username, password):
+
             # 중복 접속 체크
             if username in clients.values():
                 #client_socket.send("이미 접속 중인 아이디입니다! 연결을 종료합니다.\n".encode('utf-8'))
@@ -67,7 +77,12 @@ def handle_client(client_socket, addr):
 
             client_socket.send("인증 성공! 채팅을 시작합니다.\n".encode('utf-8'))
             clients[client_socket] = username
+
+            # 입장 시 과거 채팅 기록 전송
+            send_chat_history(client_socket, current_room_id)
+
             broadcast(f"\n[알림] {username}님이 입장하셨습니다.", client_socket)
+
         else:
             client_socket.send("인증 실패! 연결 종료\n".encode('utf-8'))
             client_socket.close()
@@ -78,7 +93,10 @@ def handle_client(client_socket, addr):
             msg = client_socket.recv(1024).decode('utf-8')
             if not msg: break
 
-            # 메시지에 발신자 ID를 붙여서 다른 사람들에게 전송
+            # DB에 메시지 기록
+            db.save_message(current_room_id, username, msg)
+
+            # 다른 사람들에게 브로드캐스트
             formatted_msg = f"\r\033[96m[{username}]\033[0m: {msg}"
             broadcast(formatted_msg, client_socket)
 
@@ -93,12 +111,14 @@ def handle_client(client_socket, addr):
         client_socket.close()
         print(f"[끊김] {addr} 연결 종료.")
 
-server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-server.bind(("0.0.0.0", 5000)) # GCP에서 연 방화벽 포트
-server.listen(2)
-print("[서버 시작] 클라이언트 기다리는 중...")
+# 메인 서버 실행 로직
+if __name__ == "__main__":
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("0.0.0.0", 5000)) # GCP에서 연 방화벽 포트
+    server.listen(2)
+    print("[서버 시작] 클라이언트 기다리는 중...")
 
-while True:
-    conn, addr = server.accept()
-    threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
+    while True:
+        conn, addr = server.accept()
+        threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
