@@ -1,72 +1,11 @@
 # chat_server.py
 import socket
 import threading
-import json
-import bcrpt
 from database import Database
 
 # DB 인스턴스 생성
 db = Database()
 clients = {} # {socket 객체: "유저ID"} 형태로 관리
-
-def socket_send(csock, target, value):
-    """메시지 전송하는 부분"""
-    json_data = json.dumps({"target": target, "value": value})
-    csock.send(json_data.encode('utf-8'))
-
-def socket_recv(csock):
-    recv_raw = csock.recv(4096).decode('utf-8')
-    recv_dict = json.loads(recv_raw)
-    return recv_dict
-
-def login(csock, id, password):
-    """로그인 DB 검증 및 결과 반환 (아이디 리턴하면 성공, 0 리턴하면 실패, 1 리턴하면 이미 접속 중)"""
-    try:
-        recv = socket_recv(csock).strip()
-        id = recv['id']
-        password = recv['password']
-
-        if db.authenticate_user(id, password):
-
-            # 중복 접속 체크
-            if id in clients.values():
-                socket_send(csock, "REQUEST", "login_conflict")
-                answer = socket_recv(csock)
-
-                if answer == 'y':
-                    target_sock = None
-                    for con_sock, con_id in list(clients.items()):
-                        if con_id == id:
-                            target_sock = con_sock
-                            break
-
-                    if target_sock:
-                        try:
-                            socket_send(target_sock, "SYSTEM", "duplicate_login")
-                            target_sock.close()
-                        except:
-                            pass
-                        # 딕셔너리 안전하게 삭제
-                        clients.pop(target_sock, None)
-
-                else:
-                    socket_send(csock, "SYSTEM", "disconnect")
-                    return 0
-
-            socket_send(csock, "SYSTEM", "login_success")
-            clients[csock] = id
-            
-            return id
-
-
-
-# def toJson(data_type, value):
-#     """서버로 전송할 데이터를 json으로 만들어주는 함수"""
-#     data = {
-#         "type": data_type,
-#         "value": value
-#     }
-#     return json.dumps(data)
 
 def broadcast(msg, exclude_sock=None):
     """모든 클라이언트에게 메시지를 전송하는 함수"""
@@ -95,27 +34,48 @@ def handle_client(client_socket, addr):
     current_room_id = 1
 
     try:
-        
+        # 로그인 인증 단계
+        # 클라이언트에게 ID 요청
+        client_socket.send("ID: ".encode('utf-8'))
+        username = client_socket.recv(1024).decode('utf-8').strip()
+
+        # 클라이언트에게 비밀번호 요청
+        client_socket.send("PW: ".encode('utf-8'))
+        password = client_socket.recv(1024).decode('utf-8').strip()
 
         # DB를 통해 인증 확인
-        user_id = login(client_socket, uid, upassword)
-
-        if user_id == 0:
-            # 로그인 실패 실제 소켓 닫기
-            print(f"{addr} - 로그인 실패: 연결을 종료합니다.")
-            client_socket.close()
-        else:
-            # 로그인 성공
-            print(f"{addr} - {user_id} 로그인 성공")
-            
-            # user_state - 0: 방 선택 창, 1 -
-            user_state = 0
-            while True:
-
-        
-
-
         if db.authenticate_user(username, password):
+
+            # 중복 접속 체크
+            if username in clients.values():
+                #client_socket.send("이미 접속 중인 아이디입니다! 연결을 종료합니다.\n".encode('utf-8'))
+                #client_socket.close()
+                # return
+                client_socket.send("이미 접속 중인 아이디입니다! 다른 세션을 종료하고 접속하시겠습니까? (y/n): ".encode('utf-8'))
+                answer = client_socket.recv(1024).decode('utf-8').strip().lower()
+
+                if answer == 'y':
+                    target_sock = None
+                    for sock, user_id in list(clients.items()):
+                        if user_id == username:
+                            target_sock = sock
+                            break
+
+                    if target_sock:
+                        try:
+                            target_sock.send("quit".encode('utf-8'))
+                            target_sock.close()
+                        except:
+                            pass
+                        # 딕셔너리에서 안전하게 삭제
+                        clients.pop(target_sock, None)
+                    
+                    # 새로 들어온 사람에게 성공 메시지 전송
+                    client_socket.send(f"\n {username}님의 기존 연결을 성공적으로 종료했습니다.\n".encode('utf-8'))
+                else:
+                    client_socket.send("연결을 종료합니다.".encode('utf-8'))
+                    return
+                
 
             client_socket.send("인증 성공! 채팅을 시작합니다.\n".encode('utf-8'))
             clients[client_socket] = username
